@@ -1,0 +1,276 @@
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
+  binaryTargets   = ["native", "darwin-arm64", "linux-arm64-openssl-1.1.x", "debian-openssl-1.1.x"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  extensions = [pgvector(map: "vector"), uuidOssp(map: "uuid-ossp")]
+}
+
+// ─── Users & Organizations ────────────────────────────────────
+
+model User {
+  id           String   @id @default(uuid()) @db.Uuid
+  email        String   @unique
+  name         String
+  passwordHash String?  @map("password_hash")
+  authProvider String   @default("email") @map("auth_provider")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  organizationUsers OrganizationUser[]
+  uploadedSheets    Sheet[]            @relation("UploadedBy")
+  matchedProducts   MatchedProduct[]   @relation("MatchedBy")
+  matchFeedback     MatchFeedback[]    @relation("ReviewedBy")
+
+  @@map("users")
+}
+
+model Organization {
+  id                    String   @id @default(uuid()) @db.Uuid
+  name                  String
+  stripeCustomerId      String?  @unique @map("stripe_customer_id")
+  planTier              String   @default("starter") @map("plan_tier")
+  monthlyMatchLimit     Int      @default(500) @map("monthly_match_limit")
+  matchesUsedThisPeriod Int      @default(0) @map("matches_used_this_period")
+  billingPeriodStart    DateTime @default(now()) @map("billing_period_start")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  organizationUsers OrganizationUser[]
+  sheets            Sheet[]
+  subscriptions     Subscription[]
+
+  @@map("organizations")
+}
+
+model OrganizationUser {
+  id     String @id @default(uuid()) @db.Uuid
+  orgId  String @map("org_id") @db.Uuid
+  userId String @map("user_id") @db.Uuid
+  role   String @default("member")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([orgId, userId])
+  @@map("organizations_users")
+}
+
+// ─── Sheets & Items ───────────────────────────────────────────
+
+model Sheet {
+  id               String  @id @default(uuid()) @db.Uuid
+  orgId            String  @map("org_id") @db.Uuid
+  uploadedByUserId String  @map("uploaded_by_user_id") @db.Uuid
+  name             String
+  sourceType       String  @map("source_type") // csv, excel, image, pdf
+  storageUrl       String? @map("storage_url")
+  status           String  @default("created") // created, extracting, extracted, normalizing, matching, complete, error
+
+  totalItems     Int @default(0) @map("total_items")
+  matchedItems   Int @default(0) @map("matched_items")
+  reviewItems    Int @default(0) @map("review_items")
+  unmatchedItems Int @default(0) @map("unmatched_items")
+
+  extractionMetadata Json? @map("extraction_metadata")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  uploadedBy   User         @relation("UploadedBy", fields: [uploadedByUserId], references: [id])
+  items        SheetItem[]
+
+  @@index([orgId, status])
+  @@map("sheets")
+}
+
+model SheetItem {
+  id        String @id @default(uuid()) @db.Uuid
+  sheetId   String @map("sheet_id") @db.Uuid
+  rowNumber Int    @map("row_number")
+
+  // Raw extracted data
+  rawDescription String? @map("raw_description")
+  rawBrand       String? @map("raw_brand")
+  rawSku         String? @map("raw_sku")
+  rawUpc         String? @map("raw_upc")
+  rawSize        String? @map("raw_size")
+  rawPrice       String? @map("raw_price")
+  rawData        Json?   @map("raw_data")
+
+  // Normalized data (post-LLM cleanup)
+  normalizedBrand       String? @map("normalized_brand")
+  normalizedDescription String? @map("normalized_description")
+  normalizedSize        String? @map("normalized_size")
+  normalizedCategory    String? @map("normalized_category")
+
+  // Match status
+  status          String  @default("pending") // pending, normalizing, matching, auto_matched, review, matched, unmatched, error
+  matchConfidence Float?  @map("match_confidence")
+  matchMethod     String? @map("match_method") // upc_exact, asin_exact, cache_hit, llm_ranked, manual
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  sheet           Sheet           @relation(fields: [sheetId], references: [id], onDelete: Cascade)
+  matchCandidates MatchCandidate[]
+  matchedProduct  MatchedProduct?
+  matchFeedback   MatchFeedback[]
+
+  @@index([sheetId, status])
+  @@map("sheet_items")
+}
+
+// ─── Matching ─────────────────────────────────────────────────
+
+model MatchCandidate {
+  id          String @id @default(uuid()) @db.Uuid
+  sheetItemId String @map("sheet_item_id") @db.Uuid
+
+  asin     String?
+  upc      String?
+  title    String?
+  brand    String?
+  imageUrl String? @map("image_url")
+  source   String? // upcitemdb, keepa, amazon_pa, cache
+
+  confidenceScore Float?  @map("confidence_score")
+  matchReasoning  Json?   @map("match_reasoning")
+  llmChoice       Boolean @default(false) @map("llm_choice")
+  upcExactMatch   Boolean @default(false) @map("upc_exact_match")
+  rank            Int     @default(0)
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  sheetItem SheetItem @relation(fields: [sheetItemId], references: [id], onDelete: Cascade)
+
+  @@index([sheetItemId, rank])
+  @@map("match_candidates")
+}
+
+model MatchedProduct {
+  id          String @id @default(uuid()) @db.Uuid
+  sheetItemId String @unique @map("sheet_item_id") @db.Uuid
+
+  asin          String?
+  upc           String?
+  canonicalName String? @map("canonical_name")
+  brand         String?
+  category      String?
+  imageUrl      String? @map("image_url")
+
+  matchMethod       String  @map("match_method") // upc_exact, asin_exact, auto_match, manual
+  confidence        Float   @default(0)
+  matchedByUserId   String? @map("matched_by_user_id") @db.Uuid
+
+  matchedAt DateTime @default(now()) @map("matched_at")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  sheetItem   SheetItem    @relation(fields: [sheetItemId], references: [id], onDelete: Cascade)
+  matchedBy   User?        @relation("MatchedBy", fields: [matchedByUserId], references: [id])
+  pricingData PricingData?
+
+  @@index([asin])
+  @@index([upc])
+  @@map("matched_products")
+}
+
+// ─── Pricing ──────────────────────────────────────────────────
+
+model PricingData {
+  id               String @id @default(uuid()) @db.Uuid
+  matchedProductId String @unique @map("matched_product_id") @db.Uuid
+
+  asin                String?
+  buyBoxPriceCents    Int?    @map("buy_box_price_cents")
+  avg30DayPriceCents  Int?    @map("avg_30_day_price_cents")
+  avg90DayPriceCents  Int?    @map("avg_90_day_price_cents")
+  lowestPriceCents    Int?    @map("lowest_price_cents")
+
+  soldLastMonth      Int?    @map("sold_last_month")
+  totalOffers        Int?    @map("total_offers")
+  competitiveSellers Int?    @map("competitive_sellers")
+  dominantSellerId   String? @map("dominant_seller_id")
+
+  profitMargin Float? @map("profit_margin")
+  roi          Float?
+
+  bsrCategory String? @map("bsr_category")
+  bsrRank     Int?    @map("bsr_rank")
+
+  rawKeepaData Json? @map("raw_keepa_data")
+
+  fetchedAt DateTime @default(now()) @map("fetched_at")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  matchedProduct MatchedProduct @relation(fields: [matchedProductId], references: [id], onDelete: Cascade)
+
+  @@index([asin])
+  @@map("pricing_data")
+}
+
+// ─── Feedback ─────────────────────────────────────────────────
+
+model MatchFeedback {
+  id               String  @id @default(uuid()) @db.Uuid
+  sheetItemId      String  @map("sheet_item_id") @db.Uuid
+  suggestedMatchId String? @map("suggested_match_id") @db.Uuid
+  acceptedMatchId  String? @map("accepted_match_id") @db.Uuid
+  action           String  // accept, reject, correct, new_product
+  mismatchReason   String? @map("mismatch_reason")
+  reviewerId       String  @map("reviewer_id") @db.Uuid
+  timeToDecisionMs Int?    @map("time_to_decision_ms")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  sheetItem SheetItem @relation(fields: [sheetItemId], references: [id], onDelete: Cascade)
+  reviewer  User      @relation("ReviewedBy", fields: [reviewerId], references: [id])
+
+  @@map("match_feedback")
+}
+
+// ─── Billing ──────────────────────────────────────────────────
+
+model Subscription {
+  id                   String   @id @default(uuid()) @db.Uuid
+  orgId                String   @map("org_id") @db.Uuid
+  stripeSubscriptionId String?  @unique @map("stripe_subscription_id")
+  planTier             String   @map("plan_tier")
+  status               String   @default("active") // active, canceled, past_due
+  matchLimit           Int      @map("match_limit")
+  pricePerMatchCents   Int      @default(10) @map("price_per_match_cents")
+  currentPeriodStart   DateTime @map("current_period_start")
+  currentPeriodEnd     DateTime @map("current_period_end")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@map("subscriptions")
+}
+
+// ─── Brand Aliases ────────────────────────────────────────────
+
+model BrandAlias {
+  canonicalBrand String @map("canonical_brand")
+  alias          String
+  source         String @default("manual") // manual, model_suggested, import
+  confidence     Float  @default(1.0)
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@id([canonicalBrand, alias])
+  @@index([alias])
+  @@map("brand_aliases")
+}

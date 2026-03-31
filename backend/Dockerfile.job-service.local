@@ -1,0 +1,18 @@
+FROM node:20
+
+WORKDIR /app
+
+# Copy package files first for better caching
+COPY package.json ./
+
+# Install dependencies
+RUN npm install
+
+# Copy remaining files
+COPY . .
+
+# Generate Prisma client
+RUN npx prisma generate
+
+# Use tsx watch for development with hot reload
+CMD ["npx", "tsx", "watch", "src/services/job-service/index.ts"]

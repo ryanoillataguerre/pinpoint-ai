@@ -1,0 +1,113 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    ports:
+      - "5442:5432"
+    environment:
+      POSTGRES_USER: pinpoint
+      POSTGRES_PASSWORD: pinpoint
+      POSTGRES_DB: pinpoint
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - pinpoint-dev
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pinpoint"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6382:6379"
+    volumes:
+      - redisdata:/data
+    networks:
+      - pinpoint-dev
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  rabbitmq:
+    image: rabbitmq:3.13-management
+    ports:
+      - "5674:5672"
+      - "15674:15672"
+    environment:
+      RABBITMQ_DEFAULT_USER: pinpoint
+      RABBITMQ_DEFAULT_PASS: pinpoint
+    volumes:
+      - rabbitmqdata:/var/lib/rabbitmq
+    networks:
+      - pinpoint-dev
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "check_running"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  api-service:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.api-service.local
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./backend/src:/app/src
+      - ./backend/prisma:/app/prisma
+    networks:
+      - pinpoint-dev
+    restart: on-failure
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: development
+      PORT: 8080
+      DATABASE_URL: postgresql://pinpoint:pinpoint@postgres:5432/pinpoint?schema=public
+      REDIS_URL: redis://redis:6379
+      RABBITMQ_URL: amqp://pinpoint:pinpoint@rabbitmq:5672
+      FRONTEND_URL: http://localhost:3000
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
+  job-service:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.job-service.local
+    volumes:
+      - ./backend/src:/app/src
+      - ./backend/prisma:/app/prisma
+    networks:
+      - pinpoint-dev
+    restart: on-failure
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: postgresql://pinpoint:pinpoint@postgres:5432/pinpoint?schema=public
+      REDIS_URL: redis://redis:6379
+      RABBITMQ_URL: amqp://pinpoint:pinpoint@rabbitmq:5672
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
+networks:
+  pinpoint-dev:
+    driver: bridge
+
+volumes:
+  pgdata:
+  redisdata:
+  rabbitmqdata:
