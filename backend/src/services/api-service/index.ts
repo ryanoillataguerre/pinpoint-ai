@@ -9,6 +9,8 @@ import { errorHandler } from "./middleware/error-handler";
 import { createAuthRouter } from "./routes/auth.router";
 import { createSheetsRouter } from "./routes/sheets.router";
 import { createUploadsRouter } from "./routes/uploads.router";
+import { createMatchesRouter } from "./routes/matches.router";
+import { createPricingRouter } from "./routes/pricing.router";
 import { rabbitmq, setupQueues } from "../../lib/queue";
 
 const app = express();
@@ -36,6 +38,8 @@ app.get("/healthcheck", (_req, res) => {
 app.use("/auth", createAuthRouter(prisma));
 app.use("/sheets", createSheetsRouter(prisma));
 app.use("/uploads", createUploadsRouter(prisma));
+app.use("/matches", createMatchesRouter(prisma));
+app.use("/pricing", createPricingRouter(prisma));
 
 // Error handler (must be last)
 app.use(errorHandler);
