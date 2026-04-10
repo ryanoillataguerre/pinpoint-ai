@@ -11,11 +11,172 @@ import {
 } from "../../../shared/errors";
 import { AuthenticatedRequest } from "../../../shared/types";
 import { enqueuePricing } from "../../../lib/queue";
+import { generateEmbedding, buildEmbeddingText } from "../../../lib/embeddings";
 
 export function createMatchesRouter(prisma: PrismaClient) {
   const router = Router();
 
   router.use(verifyToken);
+
+  // GET /matches/similar/:itemId — find similar previously matched products
+  router.get(
+    "/similar/:itemId",
+    param("itemId").isUUID(),
+    errorPassthrough(async (req: AuthenticatedRequest, res: Response) => {
+      const itemId = req.params.itemId as string;
+
+      const item = await prisma.sheetItem.findUnique({
+        where: { id: itemId },
+        include: { sheet: { select: { orgId: true } } },
+      });
+
+      if (!item) throw new NotFoundError("Item not found");
+      if (item.sheet.orgId !== req.orgId) throw new ForbiddenError();
+
+      // Build embedding from normalized data
+      const embText = buildEmbeddingText({
+        normalizedBrand: item.normalizedBrand,
+        normalizedDescription: item.normalizedDescription,
+        normalizedCategory: item.normalizedCategory,
+      });
+
+      if (!embText) {
+        res.json({ data: [] });
+        return;
+      }
+
+      const embedding = await generateEmbedding(embText);
+      const vectorStr = `[${embedding.join(",")}]`;
+
+      // Return richer data including pricing, image, category, UPC, match method
+      // Filter to same org to prevent cross-org data leaks
+      // Similarity threshold > 0.7 to filter noise
+      const similar = await prisma.$queryRawUnsafe<
+        Array<{
+          id: string;
+          asin: string | null;
+          upc: string | null;
+          canonical_name: string | null;
+          brand: string | null;
+          category: string | null;
+          image_url: string | null;
+          match_method: string;
+          confidence: number;
+          similarity: number;
+          buy_box_price_cents: number | null;
+        }>
+      >(
+        `SELECT mp.id, mp.asin, mp.upc, mp.canonical_name, mp.brand,
+                mp.category, mp.image_url, mp.match_method, mp.confidence,
+                1 - (mp.embedding <=> $1::vector) as similarity,
+                pd.buy_box_price_cents
+         FROM matched_products mp
+         INNER JOIN sheet_items si ON si.id = mp.sheet_item_id
+         INNER JOIN sheets s ON s.id = si.sheet_id
+         LEFT JOIN pricing_data pd ON pd.matched_product_id = mp.id
+         WHERE mp.embedding IS NOT NULL
+           AND s.org_id = $2::uuid
+           AND 1 - (mp.embedding <=> $1::vector) > 0.7
+         ORDER BY mp.embedding <=> $1::vector
+         LIMIT 5`,
+        vectorStr,
+        req.orgId
+      );
+
+      res.json({ data: similar });
+    })
+  );
+
+  // POST /matches/:itemId/use-similar — create a match from a similar product
+  router.post(
+    "/:itemId/use-similar",
+    param("itemId").isUUID(),
+    body("similarProductId").isUUID(),
+    errorPassthrough(async (req: AuthenticatedRequest, res: Response) => {
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) {
+        throw new BadRequestError("Validation failed", errors.array());
+      }
+
+      const itemId = req.params.itemId as string;
+      const { similarProductId } = req.body;
+
+      const item = await prisma.sheetItem.findUnique({
+        where: { id: itemId },
+        include: { sheet: { select: { orgId: true, id: true } } },
+      });
+
+      if (!item) throw new NotFoundError("Item not found");
+      if (item.sheet.orgId !== req.orgId) throw new ForbiddenError();
+
+      // Find the similar matched product (verify same org)
+      const similarProduct = await prisma.matchedProduct.findUnique({
+        where: { id: similarProductId },
+        include: {
+          sheetItem: { include: { sheet: { select: { orgId: true } } } },
+        },
+      });
+
+      if (!similarProduct || similarProduct.sheetItem.sheet.orgId !== req.orgId) {
+        throw new NotFoundError("Similar product not found");
+      }
+
+      const matchedProduct = await prisma.$transaction(async (tx) => {
+        await tx.matchedProduct.deleteMany({
+          where: { sheetItemId: itemId },
+        });
+
+        const mp = await tx.matchedProduct.create({
+          data: {
+            id: uuidv4(),
+            sheetItemId: itemId,
+            asin: similarProduct.asin,
+            upc: similarProduct.upc,
+            canonicalName: similarProduct.canonicalName,
+            brand: similarProduct.brand,
+            category: similarProduct.category,
+            imageUrl: similarProduct.imageUrl,
+            matchMethod: "similar",
+            confidence: 1.0,
+            matchedByUserId: req.userId,
+          },
+        });
+
+        await tx.sheetItem.update({
+          where: { id: itemId },
+          data: {
+            status: "matched",
+            matchConfidence: 1.0,
+            matchMethod: "similar",
+          },
+        });
+
+        await tx.matchFeedback.create({
+          data: {
+            id: uuidv4(),
+            sheetItemId: itemId,
+            acceptedMatchId: similarProductId,
+            action: "accept",
+            reviewerId: req.userId!,
+          },
+        });
+
+        return mp;
+      });
+
+      await updateSheetCounts(prisma, item.sheet.id);
+
+      if (matchedProduct.asin) {
+        await enqueuePricing({
+          matchedProductId: matchedProduct.id,
+          asin: matchedProduct.asin,
+          sheetId: item.sheet.id,
+        });
+      }
+
+      res.json({ data: matchedProduct });
+    })
+  );
 
   // POST /matches/:itemId/accept — accept a match candidate
   router.post(

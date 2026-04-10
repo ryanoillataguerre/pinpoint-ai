@@ -7,7 +7,7 @@ import api from "@/lib/api-client";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { PricingTable } from "@/components/features/pricing-table";
-import { ArrowLeft, Download, DollarSign, TrendingUp, Package, BarChart3 } from "lucide-react";
+import { ArrowLeft, Download, DollarSign, TrendingUp, Package, BarChart3, ChevronDown } from "lucide-react";
 import toast from "react-hot-toast";
 
 interface PricingSummary {
@@ -27,6 +27,7 @@ export default function PricingPage() {
   const [summary, setSummary] = useState<PricingSummary | null>(null);
   const [sheetName, setSheetName] = useState("");
   const [isLoading, setIsLoading] = useState(true);
+  const [exportOpen, setExportOpen] = useState(false);
 
   const fetchData = useCallback(async () => {
     try {
@@ -54,16 +55,49 @@ export default function PricingPage() {
         responseType: "blob",
       });
       const blob = new Blob([res.data], { type: "text/csv" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `${sheetName || "export"}_pricing.csv`;
-      a.click();
-      URL.revokeObjectURL(url);
+      downloadBlob(blob, `${sheetName || "export"}_pricing.csv`);
       toast.success("CSV downloaded");
     } catch {
       toast.error("Export failed");
     }
+    setExportOpen(false);
+  }
+
+  async function handleExportAmazon() {
+    try {
+      const res = await api.get(`/exports/${sheetId}/amazon`, {
+        responseType: "blob",
+      });
+      const blob = new Blob([res.data], { type: "text/tab-separated-values" });
+      downloadBlob(blob, `${sheetName || "export"}_amazon_listing.txt`);
+      toast.success("Amazon flat file downloaded");
+    } catch {
+      toast.error("Amazon export failed");
+    }
+    setExportOpen(false);
+  }
+
+  async function handleExportShopify() {
+    try {
+      const res = await api.get(`/exports/${sheetId}/shopify`, {
+        responseType: "blob",
+      });
+      const blob = new Blob([res.data], { type: "text/csv" });
+      downloadBlob(blob, `${sheetName || "export"}_shopify_products.csv`);
+      toast.success("Shopify CSV downloaded");
+    } catch {
+      toast.error("Shopify export failed");
+    }
+    setExportOpen(false);
+  }
+
+  function downloadBlob(blob: Blob, filename: string) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
   }
 
   if (isLoading) {
@@ -88,10 +122,38 @@ export default function PricingPage() {
               items have pricing data
             </p>
           </div>
-          <Button onClick={handleExport} variant="outline">
-            <Download className="mr-1.5 h-4 w-4" />
-            Export CSV
-          </Button>
+          <div className="relative">
+            <Button
+              onClick={() => setExportOpen(!exportOpen)}
+              variant="outline"
+            >
+              <Download className="mr-1.5 h-4 w-4" />
+              Export
+              <ChevronDown className="ml-1.5 h-4 w-4" />
+            </Button>
+            {exportOpen && (
+              <div className="absolute right-0 z-10 mt-1 w-56 rounded-md border bg-white py-1 shadow-lg">
+                <button
+                  onClick={handleExport}
+                  className="block w-full px-4 py-2 text-left text-sm hover:bg-muted/50"
+                >
+                  Export Pricing Data (CSV)
+                </button>
+                <button
+                  onClick={handleExportAmazon}
+                  className="block w-full px-4 py-2 text-left text-sm hover:bg-muted/50"
+                >
+                  Export Amazon Listing File
+                </button>
+                <button
+                  onClick={handleExportShopify}
+                  className="block w-full px-4 py-2 text-left text-sm hover:bg-muted/50"
+                >
+                  Export Shopify Product CSV
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       </div>
 

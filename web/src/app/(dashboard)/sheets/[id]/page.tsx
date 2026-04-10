@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import React, { useEffect, useState, useCallback } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import api from "@/lib/api-client";
@@ -21,6 +21,9 @@ import {
   DollarSign,
   Download,
   RefreshCw,
+  Search,
+  Loader2,
+  X,
 } from "lucide-react";
 import toast from "react-hot-toast";
 
@@ -78,6 +81,17 @@ const statusIcon: Record<string, React.ReactNode> = {
   error: <HelpCircle className="h-4 w-4 text-red-500" />,
 };
 
+interface SimilarProduct {
+  id: string;
+  asin: string | null;
+  upc: string | null;
+  canonical_name: string | null;
+  brand: string | null;
+  image_url: string | null;
+  similarity: number;
+  buy_box_price_cents: number | null;
+}
+
 const processingStatuses = ["created", "extracting", "extracted", "normalizing", "matching"];
 
 export default function SheetDetailPage() {
@@ -87,6 +101,9 @@ export default function SheetDetailPage() {
   const [sheet, setSheet] = useState<Sheet | null>(null);
   const [items, setItems] = useState<SheetItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [similarFor, setSimilarFor] = useState<string | null>(null);
+  const [similarItems, setSimilarItems] = useState<SimilarProduct[]>([]);
+  const [similarLoading, setSimilarLoading] = useState(false);
 
   const fetchData = useCallback(async () => {
     try {
@@ -113,6 +130,35 @@ export default function SheetDetailPage() {
     const interval = setInterval(fetchData, 5000);
     return () => clearInterval(interval);
   }, [sheet, fetchData]);
+
+  async function handleFindSimilar(itemId: string) {
+    if (similarFor === itemId) {
+      setSimilarFor(null);
+      return;
+    }
+    setSimilarFor(itemId);
+    setSimilarLoading(true);
+    setSimilarItems([]);
+    try {
+      const res = await api.get(`/matches/similar/${itemId}`);
+      setSimilarItems(res.data.data);
+    } catch {
+      toast.error("Failed to find similar items");
+    } finally {
+      setSimilarLoading(false);
+    }
+  }
+
+  async function handleUseSimilar(itemId: string, similarProductId: string) {
+    try {
+      await api.post(`/matches/${itemId}/use-similar`, { similarProductId });
+      toast.success("Match created from similar item");
+      setSimilarFor(null);
+      await fetchData();
+    } catch {
+      toast.error("Failed to use similar match");
+    }
+  }
 
   async function handleExport() {
     try {
@@ -256,11 +302,13 @@ export default function SheetDetailPage() {
                   <th className="px-4 py-3 text-left font-medium">Match</th>
                   <th className="px-4 py-3 text-right font-medium">Confidence</th>
                   <th className="px-4 py-3 text-right font-medium">Price</th>
+                  <th className="px-4 py-3 text-right font-medium"></th>
                 </tr>
               </thead>
               <tbody>
                 {items.map((item) => (
-                  <tr key={item.id} className="border-b hover:bg-muted/30">
+                  <React.Fragment key={item.id}>
+                  <tr className="border-b hover:bg-muted/30">
                     <td className="px-4 py-3 text-muted-foreground">
                       {item.rowNumber}
                     </td>
@@ -316,12 +364,94 @@ export default function SheetDetailPage() {
                           ).toFixed(2)}`
                         : "—"}
                     </td>
+                    <td className="px-4 py-3 text-right">
+                      {item.status === "unmatched" && (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => handleFindSimilar(item.id)}
+                          className="h-7 text-xs"
+                        >
+                          {similarFor === item.id ? (
+                            <X className="mr-1 h-3 w-3" />
+                          ) : (
+                            <Search className="mr-1 h-3 w-3" />
+                          )}
+                          {similarFor === item.id ? "Close" : "Find Similar"}
+                        </Button>
+                      )}
+                    </td>
                   </tr>
+                  {/* Similar items row for unmatched items */}
+                  {similarFor === item.id && (
+                    <tr>
+                      <td colSpan={9} className="bg-blue-50 px-4 py-3">
+                        {similarLoading ? (
+                          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                            Searching for similar items...
+                          </div>
+                        ) : similarItems.length === 0 ? (
+                          <p className="text-sm text-muted-foreground">
+                            No similar previously matched items found
+                          </p>
+                        ) : (
+                          <div className="space-y-2">
+                            <p className="text-xs font-medium text-muted-foreground">
+                              Similar previously matched items:
+                            </p>
+                            {similarItems.map((sim) => (
+                              <div
+                                key={sim.id}
+                                className="flex items-center justify-between rounded border bg-white px-3 py-2"
+                              >
+                                <div className="flex items-center gap-2">
+                                  {sim.image_url && (
+                                    <img
+                                      src={sim.image_url}
+                                      alt=""
+                                      className="h-8 w-8 rounded border object-contain"
+                                    />
+                                  )}
+                                  <div>
+                                    <p className="text-sm font-medium">
+                                      {sim.canonical_name || "Unknown"}
+                                    </p>
+                                    <p className="text-xs text-muted-foreground">
+                                      {[sim.brand, sim.asin && `ASIN: ${sim.asin}`]
+                                        .filter(Boolean)
+                                        .join(" · ")}
+                                      {sim.buy_box_price_cents != null &&
+                                        ` · $${(sim.buy_box_price_cents / 100).toFixed(2)}`}
+                                    </p>
+                                  </div>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                  <span className="rounded-full bg-blue-100 px-2 py-0.5 text-xs font-medium text-blue-800">
+                                    {Math.round(sim.similarity * 100)}%
+                                  </span>
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    className="h-7 text-xs"
+                                    onClick={() => handleUseSimilar(item.id, sim.id)}
+                                  >
+                                    Use This
+                                  </Button>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </td>
+                    </tr>
+                  )}
+                  </React.Fragment>
                 ))}
                 {items.length === 0 && (
                   <tr>
                     <td
-                      colSpan={8}
+                      colSpan={9}
                       className="px-4 py-8 text-center text-muted-foreground"
                     >
                       {isProcessing

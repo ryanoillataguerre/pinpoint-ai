@@ -70,6 +70,8 @@ services:
       REDIS_URL: redis://redis:6379
       RABBITMQ_URL: amqp://pinpoint:pinpoint@rabbitmq:5672
       FRONTEND_URL: http://localhost:3000
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID}
+      SENTRY_DSN: ${SENTRY_DSN}
     depends_on:
       postgres:
         condition: service_healthy
@@ -95,6 +97,7 @@ services:
       DATABASE_URL: postgresql://pinpoint:pinpoint@postgres:5432/pinpoint?schema=public
       REDIS_URL: redis://redis:6379
       RABBITMQ_URL: amqp://pinpoint:pinpoint@rabbitmq:5672
+      SENTRY_DSN: ${SENTRY_DSN}
     depends_on:
       postgres:
         condition: service_healthy

@@ -1,0 +1,84 @@
+name: Deploy to Production
+
+on:
+  push:
+    branches: [main]
+
+env:
+  GCP_PROJECT: pinpoint-ai-production
+  GCP_REGION: us-west1
+  WIF_PROVIDER: projects/PROJECT_NUMBER/locations/global/workloadIdentityPools/production-gha-pool/providers/production-gha-provider
+  SERVICE_ACCOUNT: terraform@pinpoint-ai-production.iam.gserviceaccount.com
+
+jobs:
+  deploy-api:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: ${{ env.SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker
+        run: gcloud auth configure-docker ${{ env.GCP_REGION }}-docker.pkg.dev --quiet
+
+      - name: Build and push API image
+        run: |
+          docker build -t ${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT }}/api-service-production/api-service:${{ github.sha }} \
+            -t ${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT }}/api-service-production/api-service:latest \
+            -f backend/Dockerfile \
+            --build-arg SERVICE=api-service \
+            backend/
+          docker push ${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT }}/api-service-production/api-service --all-tags
+
+      - name: Deploy to Cloud Run
+        run: |
+          gcloud run deploy api-service-production \
+            --image ${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT }}/api-service-production/api-service:${{ github.sha }} \
+            --region ${{ env.GCP_REGION }} \
+            --project ${{ env.GCP_PROJECT }}
+
+  deploy-jobs:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: ${{ env.SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker
+        run: gcloud auth configure-docker ${{ env.GCP_REGION }}-docker.pkg.dev --quiet
+
+      - name: Build and push Job Service image
+        run: |
+          docker build -t ${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT }}/job-service-production/job-service:${{ github.sha }} \
+            -t ${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT }}/job-service-production/job-service:latest \
+            -f backend/Dockerfile \
+            --build-arg SERVICE=job-service \
+            backend/
+          docker push ${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT }}/job-service-production/job-service --all-tags
+
+      - name: Deploy to GCE (restart instance)
+        run: |
+          gcloud compute instances update-container production-job-service \
+            --container-image ${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT }}/job-service-production/job-service:${{ github.sha }} \
+            --zone us-west1-a \
+            --project ${{ env.GCP_PROJECT }}

@@ -27,6 +27,7 @@ export interface QueueConfig {
   routingKey: string;
   prefetch: number;
   maxAttempts: number;
+  maxPriority?: number;
 }
 
 export const QUEUE_CONFIGS: Record<string, QueueConfig> = {
@@ -50,6 +51,7 @@ export const QUEUE_CONFIGS: Record<string, QueueConfig> = {
     routingKey: ROUTING_KEYS.MATCHING,
     prefetch: 5,
     maxAttempts: 3,
+    maxPriority: 10,
   },
   pricing: {
     queue: QUEUES.PRICING,
@@ -57,5 +59,6 @@ export const QUEUE_CONFIGS: Record<string, QueueConfig> = {
     routingKey: ROUTING_KEYS.PRICING,
     prefetch: 5,
     maxAttempts: 3,
+    maxPriority: 10,
   },
 };

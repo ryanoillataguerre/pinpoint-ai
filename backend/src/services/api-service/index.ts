@@ -1,3 +1,6 @@
+import { initSentry, Sentry } from "../../lib/monitoring";
+initSentry();
+
 import "dotenv/config";
 import express from "express";
 import cors from "cors";
@@ -11,11 +14,18 @@ import { createSheetsRouter } from "./routes/sheets.router";
 import { createUploadsRouter } from "./routes/uploads.router";
 import { createMatchesRouter } from "./routes/matches.router";
 import { createPricingRouter } from "./routes/pricing.router";
+import { createBillingRouter } from "./routes/billing.router";
+import { createExportsRouter } from "./routes/exports.router";
+import { createWebhooksRouter } from "./routes/webhooks.router";
 import { rabbitmq, setupQueues } from "../../lib/queue";
+import { authLimiter, uploadLimiter } from "./middleware/rate-limit";
 
 const app = express();
 const prisma = new PrismaClient();
 const port = process.env.PORT || 8080;
+
+// Webhooks (must be before json body parser for raw body access)
+app.use("/webhooks", createWebhooksRouter(prisma));
 
 // Middleware
 app.use(helmet());
@@ -35,11 +45,13 @@ app.get("/healthcheck", (_req, res) => {
 });
 
 // Routes
-app.use("/auth", createAuthRouter(prisma));
+app.use("/auth", authLimiter, createAuthRouter(prisma));
 app.use("/sheets", createSheetsRouter(prisma));
-app.use("/uploads", createUploadsRouter(prisma));
+app.use("/uploads", uploadLimiter, createUploadsRouter(prisma));
 app.use("/matches", createMatchesRouter(prisma));
 app.use("/pricing", createPricingRouter(prisma));
+app.use("/billing", createBillingRouter(prisma));
+app.use("/exports", createExportsRouter(prisma));
 
 // Error handler (must be last)
 app.use(errorHandler);

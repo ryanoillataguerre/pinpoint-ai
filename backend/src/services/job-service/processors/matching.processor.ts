@@ -21,6 +21,13 @@ import type { MatchRankingResult } from "../../../lib/llm";
 import { MatchingJobData, enqueuePricing } from "../../../lib/queue";
 import { lookupByUpc, searchByQuery } from "../../../lib/external/upcitemdb";
 import { searchProducts as keepaSearch } from "../../../lib/external/keepa";
+import {
+  searchProducts as ebaySearch,
+  isConfigured as ebayIsConfigured,
+} from "../../../lib/external/ebay";
+import { getCachedMatch, setCachedMatch } from "../../../lib/cache";
+import { generateEmbedding, buildEmbeddingText } from "../../../lib/embeddings";
+import { cacheOrgTier } from "../../../lib/external/keepa-rate-limiter";
 
 const AUTO_MATCH_THRESHOLD = 0.9;
 const REVIEW_THRESHOLD = 0.7;
@@ -50,6 +57,19 @@ export function createMatchingProcessor(prisma: PrismaClient) {
       return;
     }
 
+    // Resolve orgId for rate limiting and priority
+    let orgId = data.orgId;
+    if (!orgId) {
+      const sheet = await prisma.sheet.findUnique({
+        where: { id: sheetId },
+        select: { orgId: true, organization: { select: { planTier: true } } },
+      });
+      orgId = sheet?.orgId;
+      if (orgId && sheet?.organization?.planTier) {
+        await cacheOrgTier(orgId, sheet.organization.planTier).catch(() => {});
+      }
+    }
+
     try {
       // ─── Step 1: Fast-path UPC exact match ────────────────
       if (item.rawUpc) {
@@ -68,11 +88,27 @@ export function createMatchingProcessor(prisma: PrismaClient) {
         }
       }
 
+      // ─── Step 1b: Check match cache ─────────────────────
+      const normalizedDesc = item.normalizedDescription || item.rawDescription || "";
+      if (normalizedDesc) {
+        const cached = await getCachedMatch(normalizedDesc, item.normalizedBrand);
+        if (cached) {
+          console.log(`Cache hit for item ${itemId}`);
+          await createAutoMatch(prisma, item.id, sheetId, {
+            title: cached.title,
+            brand: cached.brand || null,
+            category: null,
+            asin: cached.asin,
+            upc: cached.upc || null,
+            imageUrl: null,
+            source: cached.source,
+          }, "cache_hit", cached.confidence);
+          return;
+        }
+      }
+
       // ─── Step 2: Gather candidates from multiple sources ──
-      const searchQuery =
-        item.normalizedDescription ||
-        item.rawDescription ||
-        "";
+      const searchQuery = normalizedDesc;
 
       if (!searchQuery) {
         await prisma.sheetItem.update({
@@ -87,7 +123,7 @@ export function createMatchingProcessor(prisma: PrismaClient) {
 
       // Search Keepa (Amazon data)
       try {
-        const keepaResults = await keepaSearch(searchQuery);
+        const keepaResults = await keepaSearch(searchQuery, 1, orgId);
         for (const r of keepaResults) {
           candidates.push({
             title: r.title,
@@ -119,6 +155,26 @@ export function createMatchingProcessor(prisma: PrismaClient) {
         }
       } catch (err) {
         console.warn("UPCitemdb search failed:", err);
+      }
+
+      // Search eBay (if configured)
+      if (ebayIsConfigured()) {
+        try {
+          const ebayResults = await ebaySearch(searchQuery, 5);
+          for (const r of ebayResults) {
+            candidates.push({
+              title: r.title,
+              brand: null,
+              category: null,
+              asin: null,
+              upc: null,
+              imageUrl: r.imageUrl,
+              source: "ebay",
+            });
+          }
+        } catch (err) {
+          console.warn("eBay search failed:", err);
+        }
       }
 
       // Deduplicate by ASIN
@@ -266,6 +322,43 @@ async function createAutoMatch(
   });
 
   await updateSheetCounts(prisma, sheetId);
+
+  // Cache the match result for future lookups
+  const itemData = await prisma.sheetItem.findUnique({ where: { id: itemId } });
+  const desc = itemData?.normalizedDescription || itemData?.rawDescription;
+  if (desc && candidate.asin) {
+    await setCachedMatch(desc, itemData?.normalizedBrand, {
+      asin: candidate.asin,
+      upc: candidate.upc || undefined,
+      title: candidate.title,
+      brand: candidate.brand || undefined,
+      confidence,
+      source: candidate.source,
+      cachedAt: new Date().toISOString(),
+    }).catch((err) => console.warn("Cache write failed:", err));
+  }
+
+  // Generate and store embedding (non-blocking)
+  try {
+    const embText = buildEmbeddingText({
+      normalizedBrand: candidate.brand,
+      normalizedDescription: candidate.title,
+      normalizedCategory: candidate.category,
+      canonicalName: candidate.title,
+      brand: candidate.brand,
+    });
+    if (embText) {
+      const embedding = await generateEmbedding(embText);
+      const vectorStr = `[${embedding.join(",")}]`;
+      await prisma.$executeRawUnsafe(
+        `UPDATE matched_products SET embedding = $1::vector WHERE id = $2`,
+        vectorStr,
+        matchedProduct.id
+      );
+    }
+  } catch (err) {
+    console.warn("Embedding generation failed:", err);
+  }
 
   // Enqueue pricing if we have an ASIN
   if (candidate.asin) {

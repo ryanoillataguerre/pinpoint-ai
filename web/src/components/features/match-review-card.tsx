@@ -3,7 +3,9 @@
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { CheckCircle, XCircle, ChevronDown, ChevronUp } from "lucide-react";
+import { CheckCircle, XCircle, ChevronDown, ChevronUp, Search, Loader2 } from "lucide-react";
+import api from "@/lib/api-client";
+import toast from "react-hot-toast";
 
 interface Candidate {
   id: string;
@@ -15,6 +17,20 @@ interface Candidate {
   confidenceScore: number | null;
   rank: number;
   llmChoice: boolean;
+}
+
+interface SimilarProduct {
+  id: string;
+  asin: string | null;
+  upc: string | null;
+  canonical_name: string | null;
+  brand: string | null;
+  category: string | null;
+  image_url: string | null;
+  match_method: string;
+  confidence: number;
+  similarity: number;
+  buy_box_price_cents: number | null;
 }
 
 interface MatchReviewCardProps {
@@ -34,11 +50,16 @@ interface MatchReviewCardProps {
   };
   onAccept: (itemId: string, candidateId: string) => Promise<void>;
   onReject: (itemId: string) => Promise<void>;
+  onUseSimilar?: (itemId: string) => void;
 }
 
-export function MatchReviewCard({ item, onAccept, onReject }: MatchReviewCardProps) {
+export function MatchReviewCard({ item, onAccept, onReject, onUseSimilar }: MatchReviewCardProps) {
   const [expanded, setExpanded] = useState(false);
   const [isActing, setIsActing] = useState(false);
+  const [similarExpanded, setSimilarExpanded] = useState(false);
+  const [similarItems, setSimilarItems] = useState<SimilarProduct[]>([]);
+  const [similarLoading, setSimilarLoading] = useState(false);
+  const [similarLoaded, setSimilarLoaded] = useState(false);
 
   const topCandidate = item.matchCandidates.find((c) => c.llmChoice) || item.matchCandidates[0];
   const otherCandidates = item.matchCandidates.filter((c) => c.id !== topCandidate?.id);
@@ -56,6 +77,37 @@ export function MatchReviewCard({ item, onAccept, onReject }: MatchReviewCardPro
     setIsActing(true);
     try {
       await onReject(item.id);
+    } finally {
+      setIsActing(false);
+    }
+  }
+
+  async function loadSimilarItems() {
+    if (similarLoaded) {
+      setSimilarExpanded(!similarExpanded);
+      return;
+    }
+    setSimilarLoading(true);
+    setSimilarExpanded(true);
+    try {
+      const res = await api.get(`/matches/similar/${item.id}`);
+      setSimilarItems(res.data.data);
+      setSimilarLoaded(true);
+    } catch {
+      toast.error("Failed to load similar items");
+    } finally {
+      setSimilarLoading(false);
+    }
+  }
+
+  async function handleUseSimilar(similarProductId: string) {
+    setIsActing(true);
+    try {
+      await api.post(`/matches/${item.id}/use-similar`, { similarProductId });
+      toast.success("Match created from similar item");
+      onUseSimilar?.(item.id);
+    } catch {
+      toast.error("Failed to use similar match");
     } finally {
       setIsActing(false);
     }
@@ -205,6 +257,83 @@ export function MatchReviewCard({ item, onAccept, onReject }: MatchReviewCardPro
             )}
           </div>
         )}
+
+        {/* Similar previously matched items */}
+        <div className="border-t">
+          <button
+            onClick={loadSimilarItems}
+            className="flex w-full items-center justify-center gap-1 py-2 text-xs text-muted-foreground hover:bg-muted/50"
+          >
+            {similarLoading ? (
+              <Loader2 className="h-3 w-3 animate-spin" />
+            ) : similarExpanded ? (
+              <ChevronUp className="h-3 w-3" />
+            ) : (
+              <Search className="h-3 w-3" />
+            )}
+            {similarExpanded ? "Hide" : "Find"} similar previously matched items
+          </button>
+
+          {similarExpanded && !similarLoading && (
+            <div className="border-t">
+              {similarItems.length === 0 ? (
+                <p className="px-4 py-3 text-center text-xs text-muted-foreground">
+                  No similar items found
+                </p>
+              ) : (
+                <div className="divide-y">
+                  {similarItems.map((sim) => (
+                    <div key={sim.id} className="flex items-center justify-between px-4 py-3">
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2">
+                          {sim.image_url && (
+                            <img
+                              src={sim.image_url}
+                              alt=""
+                              className="h-10 w-10 rounded border object-contain"
+                            />
+                          )}
+                          <div>
+                            <p className="text-sm font-medium">
+                              {sim.canonical_name || "Unknown"}
+                            </p>
+                            <p className="text-xs text-muted-foreground">
+                              {[
+                                sim.brand,
+                                sim.asin && `ASIN: ${sim.asin}`,
+                                sim.upc && `UPC: ${sim.upc}`,
+                              ]
+                                .filter(Boolean)
+                                .join(" · ")}
+                            </p>
+                            {sim.buy_box_price_cents != null && (
+                              <p className="text-xs font-medium text-green-700">
+                                Buy Box: ${(sim.buy_box_price_cents / 100).toFixed(2)}
+                              </p>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                      <div className="ml-4 flex items-center gap-2">
+                        <span className="inline-flex items-center rounded-full bg-blue-100 px-2 py-0.5 text-xs font-medium text-blue-800">
+                          {Math.round(sim.similarity * 100)}% similar
+                        </span>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => handleUseSimilar(sim.id)}
+                          disabled={isActing}
+                        >
+                          Use This
+                        </Button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
       </CardContent>
     </Card>
   );

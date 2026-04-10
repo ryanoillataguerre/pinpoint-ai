@@ -5,6 +5,13 @@
  * Requires KEEPA_API_KEY env var. Each request costs tokens.
  */
 
+import {
+  acquireKeepaSlot,
+  recordKeepaUsage,
+  KeepaRateLimitError,
+  KEEPA_TOKEN_COSTS,
+} from "./keepa-rate-limiter";
+
 const KEEPA_BASE = "https://api.keepa.com";
 
 interface KeepaProduct {
@@ -66,8 +73,20 @@ function getApiKey(): string {
 
 async function keepaFetch<T>(
   endpoint: string,
-  params: Record<string, string>
+  params: Record<string, string>,
+  orgId?: string,
+  tokenCost = 1
 ): Promise<T | null> {
+  // Rate limit check if orgId is provided
+  if (orgId) {
+    const allowed = await acquireKeepaSlot(orgId);
+    if (!allowed) {
+      throw new KeepaRateLimitError(
+        "Keepa rate limit exceeded — request will be retried"
+      );
+    }
+  }
+
   const searchParams = new URLSearchParams({
     key: getApiKey(),
     ...params,
@@ -79,8 +98,17 @@ async function keepaFetch<T>(
       console.warn(`Keepa error ${res.status}: ${res.statusText}`);
       return null;
     }
+
+    // Record usage after successful call
+    if (orgId) {
+      await recordKeepaUsage(orgId, tokenCost).catch((err) =>
+        console.warn("Failed to record Keepa usage:", err)
+      );
+    }
+
     return (await res.json()) as T;
   } catch (err) {
+    if (err instanceof KeepaRateLimitError) throw err;
     console.error("Keepa fetch error:", err);
     return null;
   }
@@ -105,13 +133,19 @@ function extractImageUrl(imagesCSV: string | undefined): string | null {
 
 export async function searchProducts(
   query: string,
-  domain = 1 // 1 = Amazon.com
+  domain = 1, // 1 = Amazon.com
+  orgId?: string
 ): Promise<KeepaProductResult[]> {
-  const data = await keepaFetch<KeepaSearchResponse>("/search", {
-    domain: String(domain),
-    type: "product",
-    term: query,
-  });
+  const data = await keepaFetch<KeepaSearchResponse>(
+    "/search",
+    {
+      domain: String(domain),
+      type: "product",
+      term: query,
+    },
+    orgId,
+    KEEPA_TOKEN_COSTS.search
+  );
 
   if (!data?.products?.length) return [];
 
@@ -128,14 +162,20 @@ export async function searchProducts(
 
 export async function getProductByAsin(
   asin: string,
-  domain = 1
+  domain = 1,
+  orgId?: string
 ): Promise<KeepaProductResult | null> {
-  const data = await keepaFetch<KeepaProductResponse>("/product", {
-    domain: String(domain),
-    asin,
-    stats: "1",
-    offers: "20",
-  });
+  const data = await keepaFetch<KeepaProductResponse>(
+    "/product",
+    {
+      domain: String(domain),
+      asin,
+      stats: "1",
+      offers: "20",
+    },
+    orgId,
+    KEEPA_TOKEN_COSTS.productDetail
+  );
 
   if (!data?.products?.length) return null;
 
@@ -153,15 +193,21 @@ export async function getProductByAsin(
 
 export async function getProductPricing(
   asin: string,
-  domain = 1
+  domain = 1,
+  orgId?: string
 ): Promise<KeepaRichPricingData | null> {
-  const data = await keepaFetch<KeepaProductResponse>("/product", {
-    domain: String(domain),
-    asin,
-    stats: "180",
-    offers: "20",
-    buybox: "1",
-  });
+  const data = await keepaFetch<KeepaProductResponse>(
+    "/product",
+    {
+      domain: String(domain),
+      asin,
+      stats: "180",
+      offers: "20",
+      buybox: "1",
+    },
+    orgId,
+    KEEPA_TOKEN_COSTS.pricing
+  );
 
   if (!data?.products?.length) return null;
 

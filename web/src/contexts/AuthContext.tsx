@@ -30,6 +30,7 @@ interface AuthContextType {
   isLoading: boolean;
   isAuthenticated: boolean;
   login: (email: string, password: string) => Promise<void>;
+  loginWithGoogle: (idToken: string) => Promise<void>;
   signup: (name: string, email: string, password: string) => Promise<void>;
   logout: () => void;
   refreshUser: () => Promise<void>;
@@ -68,6 +69,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(data.data.user);
   };
 
+  const loginWithGoogle = async (idToken: string) => {
+    const { data } = await api.post("/auth/google", { idToken });
+    localStorage.setItem("pinpoint_access_token", data.data.accessToken);
+    localStorage.setItem("pinpoint_refresh_token", data.data.refreshToken);
+    setUser(data.data.user);
+  };
+
   const signup = async (name: string, email: string, password: string) => {
     const { data } = await api.post("/auth/signup", { name, email, password });
     localStorage.setItem("pinpoint_access_token", data.data.accessToken);
@@ -89,6 +97,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         isLoading,
         isAuthenticated: !!user,
         login,
+        loginWithGoogle,
         signup,
         logout,
         refreshUser,

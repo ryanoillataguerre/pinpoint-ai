@@ -4,6 +4,7 @@ import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import { PrismaClient } from "@prisma/client";
 import { v4 as uuidv4 } from "uuid";
+import { OAuth2Client } from "google-auth-library";
 import { errorPassthrough } from "../middleware/error-passthrough";
 import { verifyToken } from "../middleware/auth";
 import {
@@ -28,8 +29,121 @@ function generateTokens(userId: string, orgId?: string) {
   return { accessToken, refreshToken };
 }
 
+const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
+
 export function createAuthRouter(prisma: PrismaClient) {
   const router = Router();
+
+  // POST /auth/google
+  router.post(
+    "/google",
+    body("idToken").notEmpty(),
+    errorPassthrough(async (req, res) => {
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) {
+        throw new BadRequestError("Validation failed", errors.array());
+      }
+
+      const { idToken } = req.body;
+
+      let payload;
+      try {
+        const ticket = await googleClient.verifyIdToken({
+          idToken,
+          audience: process.env.GOOGLE_CLIENT_ID,
+        });
+        payload = ticket.getPayload();
+      } catch {
+        throw new UnauthorizedError("Invalid Google ID token");
+      }
+
+      if (!payload || !payload.email) {
+        throw new UnauthorizedError("Invalid Google ID token payload");
+      }
+
+      const { email, name: googleName, sub: googleId } = payload;
+      const displayName = googleName || email.split("@")[0];
+
+      // Find or create the user
+      let user;
+      const existingUser = await prisma.user.findUnique({
+        where: { email },
+        include: {
+          organizationUsers: {
+            take: 1,
+            orderBy: { createdAt: "asc" },
+          },
+        },
+      });
+
+      if (existingUser) {
+        // Update authProvider to google if not already set
+        if (existingUser.authProvider !== "google") {
+          await prisma.user.update({
+            where: { id: existingUser.id },
+            data: { authProvider: "google" },
+          });
+        }
+        user = {
+          id: existingUser.id,
+          email: existingUser.email,
+          name: existingUser.name,
+          orgId: existingUser.organizationUsers[0]?.orgId,
+        };
+      } else {
+        // Create new user with personal organization
+        const created = await prisma.$transaction(async (tx) => {
+          const newUser = await tx.user.create({
+            data: {
+              id: uuidv4(),
+              email,
+              name: displayName,
+              passwordHash: null,
+              authProvider: "google",
+            },
+          });
+
+          const org = await tx.organization.create({
+            data: {
+              id: uuidv4(),
+              name: `${displayName}'s Workspace`,
+              planTier: "starter",
+              monthlyMatchLimit: 500,
+              matchesUsedThisPeriod: 0,
+              billingPeriodStart: new Date(),
+            },
+          });
+
+          await tx.organizationUser.create({
+            data: {
+              id: uuidv4(),
+              orgId: org.id,
+              userId: newUser.id,
+              role: "owner",
+            },
+          });
+
+          return { ...newUser, orgId: org.id };
+        });
+
+        user = {
+          id: created.id,
+          email: created.email,
+          name: created.name,
+          orgId: created.orgId,
+        };
+      }
+
+      const tokens = generateTokens(user.id, user.orgId);
+
+      res.json({
+        data: {
+          user: { id: user.id, email: user.email, name: user.name },
+          ...tokens,
+        },
+      });
+    })
+  );
 
   // POST /auth/signup
   router.post(

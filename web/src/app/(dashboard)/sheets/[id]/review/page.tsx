@@ -152,6 +152,9 @@ export default function ReviewPage() {
               item={item}
               onAccept={handleAccept}
               onReject={handleReject}
+              onUseSimilar={(itemId) => {
+                setItems((prev) => prev.filter((i) => i.id !== itemId));
+              }}
             />
           ))}
         </div>

@@ -18,3 +18,4 @@ export type {
   PricingJobData,
   JobMessage,
 } from "./producer";
+export { getPriorityForPlan, MAX_QUEUE_PRIORITY } from "./priority";

@@ -6,7 +6,13 @@
 import { PrismaClient } from "@prisma/client";
 import { v4 as uuidv4 } from "uuid";
 import { getProductPricing } from "../../../lib/external/keepa";
+import {
+  getEbayPricing,
+  isConfigured as ebayIsConfigured,
+} from "../../../lib/external/ebay";
 import { PricingJobData } from "../../../lib/queue";
+import { getReferralFeeRate, FULFILLMENT_ESTIMATE } from "../../../lib/amazon/referral-fees";
+import { cacheOrgTier } from "../../../lib/external/keepa-rate-limiter";
 
 export function createPricingProcessor(prisma: PrismaClient) {
   return async function processPricing(
@@ -23,8 +29,18 @@ export function createPricingProcessor(prisma: PrismaClient) {
       return;
     }
 
+    // Resolve orgId for rate limiting
+    let orgId = data.orgId;
+    if (!orgId) {
+      const sheet = await prisma.sheet.findUnique({
+        where: { id: sheetId },
+        select: { orgId: true },
+      });
+      orgId = sheet?.orgId;
+    }
+
     try {
-      const pricing = await getProductPricing(asin);
+      const pricing = await getProductPricing(asin, 1, orgId);
 
       if (!pricing) {
         console.warn(`Pricing: no data returned for ASIN ${asin}`);
@@ -39,15 +55,39 @@ export function createPricingProcessor(prisma: PrismaClient) {
         where: { id: matchedProduct.sheetItemId },
       });
 
+      // Determine category for fee calculation
+      const category = pricing.bsrCategory || matchedProduct.category;
+      const referralRate = getReferralFeeRate(category);
+      const totalFeeRate = referralRate + FULFILLMENT_ESTIMATE;
+
       if (item?.rawPrice && pricing.buyBoxPriceCents) {
         const wholesaleCents = parsePriceToCents(item.rawPrice);
         if (wholesaleCents && wholesaleCents > 0) {
-          // Estimate Amazon fees at ~35% of selling price
-          const estimatedFees = pricing.buyBoxPriceCents * 0.35;
+          const estimatedFees = pricing.buyBoxPriceCents * totalFeeRate;
           const profit =
             pricing.buyBoxPriceCents - wholesaleCents - estimatedFees;
           profitMargin = profit / pricing.buyBoxPriceCents;
           roi = profit / wholesaleCents;
+        }
+      }
+
+      // Fetch eBay pricing for cross-marketplace comparison
+      let ebayAvgPriceCents: number | null = null;
+      let ebayListingCount: number | null = null;
+      let ebayLowestPriceCents: number | null = null;
+
+      if (ebayIsConfigured() && matchedProduct.canonicalName) {
+        try {
+          const ebayPricing = await getEbayPricing(
+            matchedProduct.canonicalName
+          );
+          if (ebayPricing) {
+            ebayAvgPriceCents = ebayPricing.avgPriceCents;
+            ebayLowestPriceCents = ebayPricing.lowestPriceCents;
+            ebayListingCount = ebayPricing.listingCount;
+          }
+        } catch (err) {
+          console.warn("eBay pricing fetch failed:", err);
         }
       }
 
@@ -66,6 +106,10 @@ export function createPricingProcessor(prisma: PrismaClient) {
           bsrRank: pricing.bsrRank,
           profitMargin,
           roi,
+          feeRate: referralRate,
+          ebayAvgPriceCents,
+          ebayListingCount,
+          ebayLowestPriceCents,
           rawKeepaData: pricing.rawKeepaData as object,
         },
       });

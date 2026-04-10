@@ -1,6 +1,7 @@
 import { v4 as uuidv4 } from "uuid";
 import { rabbitmq } from "./connection";
 import { EXCHANGES, ROUTING_KEYS } from "./queues";
+import { getPriorityForPlan } from "./priority";
 
 export interface JobMessage<T = unknown> {
   id: string;
@@ -22,7 +23,11 @@ function createMessage<T>(type: string, data: T, maxAttempts = 3): JobMessage<T>
   };
 }
 
-async function publish(routingKey: string, message: JobMessage): Promise<void> {
+async function publish(
+  routingKey: string,
+  message: JobMessage,
+  priority?: number
+): Promise<void> {
   const channel = await rabbitmq.getPublishChannel();
   channel.publish(
     EXCHANGES.PIPELINE,
@@ -32,6 +37,7 @@ async function publish(routingKey: string, message: JobMessage): Promise<void> {
       persistent: true,
       contentType: "application/json",
       messageId: message.id,
+      ...(priority !== undefined ? { priority } : {}),
     }
   );
 }
@@ -50,12 +56,14 @@ export interface NormalizationJobData {
 export interface MatchingJobData {
   sheetId: string;
   itemId: string;
+  orgId?: string;
 }
 
 export interface PricingJobData {
   matchedProductId: string;
   asin: string;
   sheetId: string;
+  orgId?: string;
 }
 
 // ─── Publishers ────────────────────────────────────────────
@@ -73,25 +81,36 @@ export async function enqueueNormalization(data: NormalizationJobData): Promise<
   return msg.id;
 }
 
-export async function enqueueMatching(data: MatchingJobData): Promise<string> {
+export async function enqueueMatching(
+  data: MatchingJobData,
+  planTier?: string
+): Promise<string> {
   const msg = createMessage("matching", data);
-  await publish(ROUTING_KEYS.MATCHING, msg);
+  const priority = planTier ? getPriorityForPlan(planTier) : undefined;
+  await publish(ROUTING_KEYS.MATCHING, msg, priority);
   return msg.id;
 }
 
-export async function enqueuePricing(data: PricingJobData): Promise<string> {
+export async function enqueuePricing(
+  data: PricingJobData,
+  planTier?: string
+): Promise<string> {
   const msg = createMessage("pricing", data);
-  await publish(ROUTING_KEYS.PRICING, msg);
+  const priority = planTier ? getPriorityForPlan(planTier) : undefined;
+  await publish(ROUTING_KEYS.PRICING, msg, priority);
   return msg.id;
 }
 
 export async function enqueueMatchingBatch(
   sheetId: string,
-  itemIds: string[]
+  itemIds: string[],
+  orgId?: string,
+  planTier?: string
 ): Promise<void> {
   const channel = await rabbitmq.getPublishChannel();
+  const priority = planTier ? getPriorityForPlan(planTier) : undefined;
   for (const itemId of itemIds) {
-    const msg = createMessage("matching", { sheetId, itemId });
+    const msg = createMessage("matching", { sheetId, itemId, orgId });
     channel.publish(
       EXCHANGES.PIPELINE,
       ROUTING_KEYS.MATCHING,
@@ -100,6 +119,7 @@ export async function enqueueMatchingBatch(
         persistent: true,
         contentType: "application/json",
         messageId: msg.id,
+        ...(priority !== undefined ? { priority } : {}),
       }
     );
   }

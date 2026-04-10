@@ -3,6 +3,9 @@
  * Listens on extraction, normalization, matching, and pricing queues.
  */
 
+import { initSentry } from "../../lib/monitoring";
+initSentry();
+
 import "dotenv/config";
 import { PrismaClient } from "@prisma/client";
 import { setupQueues, registerConsumer, QUEUE_CONFIGS } from "../../lib/queue";

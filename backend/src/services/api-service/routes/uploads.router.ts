@@ -4,7 +4,8 @@ import { PrismaClient } from "@prisma/client";
 import { v4 as uuidv4 } from "uuid";
 import multer from "multer";
 import { parse } from "csv-parse/sync";
-import { enqueueNormalization } from "../../../lib/queue";
+import { enqueueExtraction, enqueueNormalization } from "../../../lib/queue";
+import { uploadBuffer } from "../../../lib/storage";
 import { errorPassthrough } from "../middleware/error-passthrough";
 import { verifyToken } from "../middleware/auth";
 import {
@@ -144,6 +145,72 @@ export function createUploadsRouter(prisma: PrismaClient) {
             size: cols.size >= 0 ? headers[cols.size] : null,
             price: cols.price >= 0 ? headers[cols.price] : null,
           },
+        },
+      });
+    })
+  );
+
+  // POST /uploads/:sheetId/file — upload image or PDF file
+  router.post(
+    "/:sheetId/file",
+    param("sheetId").isUUID(),
+    upload.single("file"),
+    errorPassthrough(async (req: AuthenticatedRequest, res: Response) => {
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) {
+        throw new BadRequestError("Validation failed", errors.array());
+      }
+
+      if (!req.file) {
+        throw new BadRequestError("No file provided");
+      }
+
+      const sheetId = req.params.sheetId as string;
+      const sheet = await prisma.sheet.findUnique({
+        where: { id: sheetId },
+      });
+
+      if (!sheet) throw new NotFoundError("Sheet not found");
+      if (sheet.orgId !== req.orgId) throw new ForbiddenError();
+
+      // Determine source type from mimetype
+      const mimetype = req.file.mimetype;
+      let sourceType: string;
+      if (mimetype === "application/pdf") {
+        sourceType = "pdf";
+      } else if (mimetype.startsWith("image/")) {
+        sourceType = "image";
+      } else {
+        throw new BadRequestError(`Unsupported file type for file upload: ${mimetype}`);
+      }
+
+      // Upload to GCS
+      const gcsPath = `sheets/${sheetId}/${req.file.originalname}`;
+      const storageUrl = await uploadBuffer(
+        gcsPath,
+        req.file.buffer,
+        mimetype
+      );
+
+      // Update sheet with storage URL and source type
+      const updatedSheet = await prisma.sheet.update({
+        where: { id: sheetId },
+        data: {
+          storageUrl,
+          sourceType,
+          status: "uploaded",
+        },
+      });
+
+      // Enqueue extraction job
+      await enqueueExtraction({ sheetId: sheet.id });
+
+      res.status(201).json({
+        data: {
+          sheetId: updatedSheet.id,
+          storageUrl,
+          sourceType,
+          status: updatedSheet.status,
         },
       });
     })

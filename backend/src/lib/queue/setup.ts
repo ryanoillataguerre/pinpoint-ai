@@ -17,12 +17,13 @@ export async function setupQueues(): Promise<void> {
     });
     await channel.bindQueue(config.dlq, EXCHANGES.PIPELINE_DLX, config.routingKey);
 
-    // Main queue with DLX
+    // Main queue with DLX (and optional priority support)
     await channel.assertQueue(config.queue, {
       durable: true,
       arguments: {
         "x-dead-letter-exchange": EXCHANGES.PIPELINE_DLX,
         "x-dead-letter-routing-key": config.routingKey,
+        ...(config.maxPriority ? { "x-max-priority": config.maxPriority } : {}),
       },
     });
     await channel.bindQueue(config.queue, EXCHANGES.PIPELINE, config.routingKey);

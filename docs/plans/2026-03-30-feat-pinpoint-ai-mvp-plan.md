@@ -477,15 +477,15 @@ Per match cost breakdown:
 
 Set up the project skeleton, auth, and basic upload flow.
 
-- [ ] Initialize monorepo: `web/` (Next.js 15) + `backend/` (Express + TypeScript)
-- [ ] Set up Prisma with PostgreSQL schema (users, organizations, sheets, sheet_items)
-- [ ] Implement JWT auth (access + refresh tokens), matching Breakdown patterns
+- [x] Initialize monorepo: `web/` (Next.js 15) + `backend/` (Express + TypeScript)
+- [x] Set up Prisma with PostgreSQL schema (users, organizations, sheets, sheet_items)
+- [x] Implement JWT auth (access + refresh tokens), matching Breakdown patterns
 - [ ] Email/password, google OAuth signup + login
-- [ ] Docker compose for local dev (Postgres 17, Redis, RabbitMQ)
-- [ ] Next.js API route proxy layer (server-side calls to backend)
-- [ ] shadcn/ui setup with base layout (sidebar nav, header)
+- [x] Docker compose for local dev (Postgres 17, Redis, RabbitMQ)
+- [x] Next.js API route proxy layer (server-side calls to backend)
+- [x] shadcn/ui setup with base layout (sidebar nav, header)
 - [ ] File upload flow: CSV upload → parse → create sheet + sheet_items
-- [ ] Basic sheets list page + sheet detail page showing raw items
+- [x] Basic sheets list page + sheet detail page showing raw items
 - [ ] GCS integration for file storage (presigned upload URLs)
 
 **Files:**
@@ -505,11 +505,11 @@ Set up the project skeleton, auth, and basic upload flow.
 
 Build the core AI matching pipeline.
 
-- [ ] RabbitMQ setup for job queues
+- [x] RabbitMQ setup for job queues
 - [ ] Extraction processor: CSV parsing (structured) + Claude vision (images/PDFs)
 - [ ] Normalization processor: brand alias resolution, size/unit standardization (Haiku batch)
 - [ ] Multi-provider LLM client (Anthropic SDK + OpenRouter fallback)
-- [ ] UPCitemdb API client for keyword + barcode search
+- [x] UPCitemdb API client for keyword + barcode search
 - [ ] Keepa API client (adapt from Ghost/Hauntings `core/src/keepa/client.ts`)
 - [ ] Matching processor: fast-path check → candidate retrieval → LLM ranking
 - [ ] Structured output schemas for match results (confidence, reasoning, candidates)
